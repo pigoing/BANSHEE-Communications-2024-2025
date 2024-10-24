@@ -1,126 +1,147 @@
-import cv2
-import aruco_draw
-import math
-import pygame
-from pygame.locals import *
-
+\import cv2
+import numpy as np
+from simple_pid import PID
 import RPi.GPIO as GPIO
 import time
 
-# Initialize GPIO for servos
-servo_pin_y = 13  # Vertical (Y-axis) servo
-servo_pin_x = 19  # Horizontal (X-axis) servo
-
+# Set up GPIO for servo control
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(servo_pin_y, GPIO.OUT)
-GPIO.setup(servo_pin_x, GPIO.OUT)
+PAN_SERVO_PIN = 13  # Pin for pan servo
+TILT_SERVO_PIN = 18  # Pin for tilt servo
 
-# Setup PWM for both servos at 50Hz
-pwm_y = GPIO.PWM(servo_pin_y, 50)
-pwm_x = GPIO.PWM(servo_pin_x, 50)
-pwm_y.start(0)
-pwm_x.start(0)
+GPIO.setup(PAN_SERVO_PIN, GPIO.OUT)
+GPIO.setup(TILT_SERVO_PIN, GPIO.OUT)
 
-# Function to control servo angle
-def set_servo_angle(servo_pwm, angle):
-    angle = max(0, min(180, angle))  # Constrain angle
-    duty_cycle = 2.5 + (angle / 180) * 10
-    servo_pwm.ChangeDutyCycle(duty_cycle)
-    time.sleep(0.05)  # Small delay for smooth operation
+# Set PWM frequency to 50Hz for the servos
+pan_pwm = GPIO.PWM(PAN_SERVO_PIN, 50)
+tilt_pwm = GPIO.PWM(TILT_SERVO_PIN, 50)
 
-# Parameters
-x_P = 0.3  # Proportional gain for X-axis movement
-y_P = 0.3  # Proportional gain for Y-axis movement
-box_size = 200  # Bounding box size
-land = False  # Loop control flag
+# Start PWM with neutral positions
+pan_pwm.start(7.5)
+tilt_pwm.start(7.5)
 
-# Initial servo angles
-angle_x, angle_y = 90, 90  # Start at neutral position (90 degrees)
+# Function to convert angles to duty cycles
+def angle_to_duty_cycle(angle):
+    return 5 + (angle / 180.0) * 5
 
-# Scaling factor for resizing the window
-scale_factor = 2
+# Set up PID controllers with smoother values
+pid_pan = PID(Kp=0.2, Ki=0.001, Kd=0.1, setpoint=0)
+pid_tilt = PID(Kp=0.2, Ki=0.001, Kd=0.1, setpoint=0)
 
-# Initialize camera
-cv2.namedWindow("ArUco Marker Detection")
-vc = cv2.VideoCapture(0)
+# Limit PID output to between -60 and 60 degrees for smoother movement
+pid_pan.output_limits = (-60, 60)
+pid_tilt.output_limits = (-60, 60)
+
+# Set a deadband to prevent jitter from small errors
+DEADBAND = 30  # Increase deadband to reduce small movements
+
+# Limit the speed of the servo movements
+MAX_SERVO_STEP = 1  # Degrees per update (slow down the movement)
+
+# ArUco marker detection setup
+aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_250)
+aruco_params = cv2.aruco.DetectorParameters_create()
+
+# Open camera
+cap = cv2.VideoCapture(0)
+
+# Initialize servo positions
+pan_angle = 90
+tilt_angle = 90
+
+# Smoothing factor for exponential moving average (EMA)
+alpha = 0.1
+smoothed_error_x = 0
+smoothed_error_y = 0
+
+# Buffer to average marker position over multiple frames
+marker_positions_x = []
+marker_positions_y = []
+FRAME_BUFFER = 5  # Number of frames to average over
 
 try:
-    while not land:
-        # Get a frame from the camera
-        rval, img = vc.read()
-        if not rval:
-            print("Failed to capture frame")
+    while True:
+        ret, frame = cap.read()
+        if not ret:
             break
 
-        # Convert to grayscale and resize the frame
-        greyscale_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        resized_img = cv2.resize(greyscale_img, (0, 0), fx=scale_factor, fy=scale_factor)
+        # Convert frame to grayscale for marker detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Detect ArUco markers
-        aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_7X7_250)
-        aruco_params = cv2.aruco.DetectorParameters_create()
-        corners, ids, _ = cv2.aruco.detectMarkers(resized_img, aruco_dict, parameters=aruco_params)
+        corners, ids, rejected = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
 
-        # Draw detected markers
-        aruco_draw.centerloc(resized_img, corners, ids)
+        if ids is not None:
+            # Get the first detected marker
+            marker_corners = corners[0][0]
 
-        if ids is not None:  # Marker detected
-            a_id = ids[0][0]
-            text = f"AR Marker Dict 7x7, ID {a_id} - Processing"
+            # Calculate the center of the marker
+            x_marker = int((marker_corners[0][0] + marker_corners[2][0]) / 2)
+            y_marker = int((marker_corners[0][1] + marker_corners[2][1]) / 2)
 
-            if a_id == 0:  # Process only marker with ID 0
-                corner = corners[0][0]
-                avg_x, avg_y = corner[:, 0].mean(), corner[:, 1].mean()
+            # Add marker position to the buffer
+            marker_positions_x.append(x_marker)
+            marker_positions_y.append(y_marker)
 
-                # Calculate frame center and distances
-                h, w = resized_img.shape[:2]
-                center_x, center_y = w // 2, h // 2
-                avg_x, avg_y = int(avg_x), int(avg_y)
+            if len(marker_positions_x) > FRAME_BUFFER:
+                marker_positions_x.pop(0)
+                marker_positions_y.pop(0)
 
-                x_dist = avg_x - center_x
-                y_dist = avg_y - center_y
+            # Average the marker positions over the last few frames
+            x_marker = int(np.mean(marker_positions_x))
+            y_marker = int(np.mean(marker_positions_y))
 
-                # Proportional control: Convert distances to movements
-                x_movement = int(x_dist * x_P)
-                y_movement = int(y_dist * y_P)
+            # Get the frame center
+            frame_height, frame_width = gray.shape
+            x_center = frame_width // 2
+            y_center = frame_height // 2
 
-                # Update servo angles
-                angle_x = max(0, min(180, angle_x - x_movement))
-                angle_y = max(0, min(180, angle_y + y_movement))  # Inverted Y-axis
+            # Calculate the errors
+            error_x = x_marker - x_center
+            error_y = y_marker - y_center
 
-                # Move servos to new positions
-                set_servo_angle(pwm_x, angle_x)
-                set_servo_angle(pwm_y, angle_y)
+            # Calculate smoothed errors using exponential moving average (EMA)
+            smoothed_error_x = alpha * error_x + (1 - alpha) * smoothed_error_x
+            smoothed_error_y = alpha * error_y + (1 - alpha) * smoothed_error_y
 
-                # Visual feedback: Draw lines and bounding box
-                half_box_size = box_size // 2
-                cv2.rectangle(resized_img, (center_x - half_box_size, center_y - half_box_size),
-                              (center_x + half_box_size, center_y + half_box_size), (255, 0, 0), 10)
-                cv2.line(resized_img, (0, center_y), (w, center_y), (0, 255, 0), 10)
-                cv2.line(resized_img, (0, avg_y), (w, avg_y), (0, 0, 255), 10)
-                cv2.line(resized_img, (center_x, 0), (center_x, h), (0, 255, 0), 10)
-                cv2.line(resized_img, (avg_x, 0), (avg_x, h), (0, 0, 255), 10)
+            # Check if errors are significant enough to adjust servos
+            if abs(smoothed_error_x) > DEADBAND:
+                pan_correction = pid_pan(smoothed_error_x)
+            else:
+                pan_correction = 0
 
-        else:  # No marker detected
-            text = "No marker detected."
-            # Small sweep to keep servos active
-            for i in range(0, 180, 10):
-                set_servo_angle(pwm_x, i)
-                set_servo_angle(pwm_y, i)
-                time.sleep(0.1)
+            if abs(smoothed_error_y) > DEADBAND:
+                tilt_correction = pid_tilt(smoothed_error_y)
+            else:
+                tilt_correction = 0
 
-        # Display the frame with annotations
-        cv2.putText(resized_img, text, (50, 50), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0))
-        cv2.imshow("ArUco Marker Detection", resized_img)
+            # Calculate new angles but limit movement speed
+            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan_correction)), 0, 180)
+            tilt_angle = np.clip(tilt_angle + np.sign(tilt_correction) * min(MAX_SERVO_STEP, abs(tilt_correction)), 0, 180)
 
-        # Exit on 'q' key press
-        if cv2.waitKey(10) & 0xFF == ord('q'):
-            land = True
+            # Update servo positions with duty cycles
+            pan_pwm.ChangeDutyCycle(angle_to_duty_cycle(pan_angle))
+            tilt_pwm.ChangeDutyCycle(angle_to_duty_cycle(tilt_angle))
+
+            # Draw the marker and the center points
+            cv2.aruco.drawDetectedMarkers(frame, corners)
+            cv2.circle(frame, (x_marker, y_marker), 5, (0, 255, 0), -1)
+            cv2.circle(frame, (x_center, y_center), 5, (255, 0, 0), -1)
+
+        # Show the video feed with marker tracking
+        cv2.imshow('ArUco Marker Tracking', frame)
+
+        # Break the loop on 'q' key
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        # Add a small delay to slow down the loop and reduce jitter
+        time.sleep(0.05)
 
 finally:
-    # Cleanup
-    vc.release()
-    cv2.destroyAllWindows()
-    pwm_y.stop()
-    pwm_x.stop()
+    # Clean up resources
+    pan_pwm.stop()
+    tilt_pwm.stop()
     GPIO.cleanup()
+    cap.release()
+    cv2.destroyAllWindows()
