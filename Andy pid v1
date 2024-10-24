@@ -6,7 +6,7 @@ import time
 
 # Set up GPIO for servo control
 GPIO.setmode(GPIO.BCM)
-PAN_SERVO_PIN = 17
+PAN_SERVO_PIN = 13
 TILT_SERVO_PIN = 18
 
 GPIO.setup(PAN_SERVO_PIN, GPIO.OUT)
