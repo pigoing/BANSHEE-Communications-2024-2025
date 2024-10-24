@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from simple_pid import PID  # Install via 'pip install simple-pid'
+from simple_pid import PID
 import RPi.GPIO as GPIO
 import time
 
@@ -24,16 +24,19 @@ tilt_pwm.start(7.5)
 def angle_to_duty_cycle(angle):
     return 5 + (angle / 180.0) * 5
 
-# Set up PID controllers with tuned values
-pid_pan = PID(Kp=0.6, Ki=0.01, Kd=0.05, setpoint=0)
-pid_tilt = PID(Kp=0.6, Ki=0.01, Kd=0.05, setpoint=0)
+# Set up PID controllers with smoother values
+pid_pan = PID(Kp=0.3, Ki=0.001, Kd=0.15, setpoint=0)
+pid_tilt = PID(Kp=0.3, Ki=0.001, Kd=0.15, setpoint=0)
 
 # Limit PID output to between -90 and 90 degrees
-pid_pan.output_limits = (-90, 90)
-pid_tilt.output_limits = (-90, 90)
+pid_pan.output_limits = (-60, 60)  # Smaller range for smoother movement
+pid_tilt.output_limits = (-60, 60)
 
 # Set a deadband to prevent jitter from small errors
-DEADBAND = 15  # pixels
+DEADBAND = 20  # Increase the deadband to reduce small movements
+
+# Limit the speed of the servo movements
+MAX_SERVO_STEP = 2  # Degrees per update (slow down the movement)
 
 # ArUco marker detection setup
 aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_250)
@@ -42,12 +45,16 @@ aruco_params = cv2.aruco.DetectorParameters_create()
 # Open camera
 cap = cv2.VideoCapture(0)
 
+# Initialize servo positions
+pan_angle = 90
+tilt_angle = 90
+
 try:
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        
+
         # Convert frame to grayscale for marker detection
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -82,10 +89,11 @@ try:
             else:
                 tilt_correction = 0
 
-            # Calculate new angles and convert to duty cycle
-            pan_angle = np.clip(90 + pan_correction, 0, 180)
-            tilt_angle = np.clip(90 + tilt_correction, 0, 180)
+            # Calculate new angles but limit movement speed
+            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan_correction)), 0, 180)
+            tilt_angle = np.clip(tilt_angle + np.sign(tilt_correction) * min(MAX_SERVO_STEP, abs(tilt_correction)), 0, 180)
 
+            # Update servo positions with duty cycles
             pan_pwm.ChangeDutyCycle(angle_to_duty_cycle(pan_angle))
             tilt_pwm.ChangeDutyCycle(angle_to_duty_cycle(tilt_angle))
 
