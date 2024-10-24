@@ -1,118 +1,147 @@
 import cv2
+import cv2.aruco as aruco
 import numpy as np
-from simple_pid import PID
-import RPi.GPIO as GPIO
-import time
+from gpiozero import AngularServo
+from time import sleep
+from gpiozero.pins.pigpio import PiGPIOFactory
 
-# Set up GPIO for servo control
-GPIO.setmode(GPIO.BCM)
-PAN_SERVO_PIN = 13
-TILT_SERVO_PIN = 18
+print("Starting")
 
-GPIO.setup(PAN_SERVO_PIN, GPIO.OUT)
-GPIO.setup(TILT_SERVO_PIN, GPIO.OUT)
+# Initialize USB camera (Arducam 1080P)
+def initialize_camera():
+    # Assuming the USB camera is recognized as device 0
+    vid = cv2.VideoCapture(0)
+    if not vid.isOpened():
+        print("Failed to open camera")
+        return None
+    print("Camera initialized")
+    return vid
 
-# Set PWM frequency to 50Hz for the servos
-pan_pwm = GPIO.PWM(PAN_SERVO_PIN, 50)
-tilt_pwm = GPIO.PWM(TILT_SERVO_PIN, 50)
+def findArucoMarkers(img, markerSize=4, totalMarkers=250, draw=True):
+    arucoDict = aruco.Dictionary_get(aruco.DICT_ARUCO_ORIGINAL)
+    arucoParam = aruco.DetectorParameters_create()
+    bbox, ids, rejected = aruco.detectMarkers(img, arucoDict, parameters=arucoParam)
+    
+    if draw:
+        aruco.drawDetectedMarkers(img, bbox)
+    return bbox, ids, rejected
 
-# Start PWM with neutral positions
-pan_pwm.start(7.5)
-tilt_pwm.start(7.5)
+class ArucoMarker():
+    def __init__(self):
+        self.bboxtl = None
+        self.bboxbr = None
+        self.centre = None
+    
+    @staticmethod
+    def getCentre(bboxtl, bboxbr):
+        return int((bboxtl[0] + bboxbr[0]) / 2), int((bboxtl[1] + bboxbr[1]) / 2)
 
-# Function to convert angles to duty cycles
-def angle_to_duty_cycle(angle):
-    return 5 + (angle / 180.0) * 5
+def getArucos(img):
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    arucos = []
+    bboxs, ids, rejected = findArucoMarkers(img, markerSize=4, totalMarkers=250, draw=True)
+    
+    if np.any(ids is None):
+        return [], 0
+    else:
+        for bbox in bboxs:
+            aruco = ArucoMarker()
+            aruco.bboxtl = bbox[0][0][0], bbox[0][0][1]
+            aruco.bboxbr = bbox[0][2][0], bbox[0][2][1]
+            aruco.centre = ArucoMarker.getCentre(aruco.bboxtl, aruco.bboxbr)
+            arucos.append(aruco)
+        return arucos, 1
 
-# Set up PID controllers with smoother values
-pid_pan = PID(Kp=0.3, Ki=0.001, Kd=0.15, setpoint=0)
-pid_tilt = PID(Kp=0.3, Ki=0.001, Kd=0.15, setpoint=0)
+def getAdjustment(windowMax, x):
+    normalised_adjustment = x / windowMax - 0.5
+    adjustment_magnitude = abs(round(normalised_adjustment, 1))
+    adjustment_direction = -1 if normalised_adjustment > 0 else 1
+    return adjustment_magnitude, adjustment_direction
 
-# Limit PID output to between -90 and 90 degrees
-pid_pan.output_limits = (-60, 60)  # Smaller range for smoother movement
-pid_tilt.output_limits = (-60, 60)
+# Function to resize frame (used for performance)
+def rescale_frame(frame, percent):
+    width = int(frame.shape[1] * percent / 100)
+    height = int(frame.shape[0] * percent / 100)
+    dim = (width, height)
+    return cv2.resize(frame, dim, interpolation=cv2.INTER_AREA)
 
-# Set a deadband to prevent jitter from small errors
-DEADBAND = 20  # Increase the deadband to reduce small movements
+# Initialize camera
+vid = initialize_camera()
 
-# Limit the speed of the servo movements
-MAX_SERVO_STEP = 2  # Degrees per update (slow down the movement)
+# Initialize servos on GPIO pins 18 and 13 (swapped)
+pigpio_factory = PiGPIOFactory()
+servo1 = AngularServo(13, pin_factory=pigpio_factory)  # Servo 1 now on Pin 13
+servo2 = AngularServo(18, pin_factory=pigpio_factory)  # Servo 2 now on Pin 18
 
-# ArUco marker detection setup
-aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_250)
-aruco_params = cv2.aruco.DetectorParameters_create()
+servo1_now = 0
+servo2_now = 0
+servo1.angle = servo1_now
+servo2.angle = servo2_now
+sleep(2)
+print("Initialized servos (Servo 1 on GPIO 13 and Servo 2 on GPIO 18).")
 
-# Open camera
-cap = cv2.VideoCapture(0)
+# Constants
+cx = -1  # Adjust if servo direction is reversed
+cy = 1
+Kp = 80
+Kd = 10
 
-# Initialize servo positions
-pan_angle = 90
-tilt_angle = 90
+xmag_old = 0
+ymag_old = 0
 
-try:
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+# Main loop
+while True:
+    # Capture frame-by-frame
+    ret, img = vid.read()
+    if not ret:
+        print("Failed to grab frame")
+        break
+    
+    # Rescale frame to improve performance
+    img = rescale_frame(img, 50)
+    window = img.shape
+    
+    # Get ArUco markers
+    arucos, ret = getArucos(img)
+    if ret == 0:
+        continue  # Skip if no marker found
+    
+    # Get marker center for adjustment
+    B = arucos[0].centre
 
-        # Convert frame to grayscale for marker detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # Get adjustment magnitudes for X and Y axes
+    xmag, xdir = getAdjustment(window[0], B[1])
+    ymag, ydir = getAdjustment(window[1], B[0])
 
-        # Detect ArUco markers
-        corners, ids, rejected = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
-
-        if ids is not None:
-            # Get the first detected marker
-            marker_corners = corners[0][0]
-
-            # Calculate the center of the marker
-            x_marker = int((marker_corners[0][0] + marker_corners[2][0]) / 2)
-            y_marker = int((marker_corners[0][1] + marker_corners[2][1]) / 2)
-
-            # Get the frame center
-            frame_height, frame_width = gray.shape
-            x_center = frame_width // 2
-            y_center = frame_height // 2
-
-            # Calculate the errors
-            error_x = x_marker - x_center
-            error_y = y_marker - y_center
-
-            # Check if errors are significant enough to adjust servos
-            if abs(error_x) > DEADBAND:
-                pan_correction = pid_pan(error_x)
-            else:
-                pan_correction = 0
-
-            if abs(error_y) > DEADBAND:
-                tilt_correction = pid_tilt(error_y)
-            else:
-                tilt_correction = 0
-
-            # Calculate new angles but limit movement speed
-            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan_correction)), 0, 180)
-            tilt_angle = np.clip(tilt_angle + np.sign(tilt_correction) * min(MAX_SERVO_STEP, abs(tilt_correction)), 0, 180)
-
-            # Update servo positions with duty cycles
-            pan_pwm.ChangeDutyCycle(angle_to_duty_cycle(pan_angle))
-            tilt_pwm.ChangeDutyCycle(angle_to_duty_cycle(tilt_angle))
-
-            # Draw the marker and the center points
-            cv2.aruco.drawDetectedMarkers(frame, corners)
-            cv2.circle(frame, (x_marker, y_marker), 5, (0, 255, 0), -1)
-            cv2.circle(frame, (x_center, y_center), 5, (255, 0, 0), -1)
-
-        # Show the video feed with marker tracking
-        cv2.imshow('ArUco Marker Tracking', frame)
-
-        # Break the loop on 'q' key
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-finally:
-    # Clean up resources
-    pan_pwm.stop()
-    tilt_pwm.stop()
-    GPIO.cleanup()
-    cap.release()
-    cv2.destroyAllWindows()
+    if xmag is not None:
+        # Proportional adjustments
+        adj_Kpx = cx * Kp * xdir * xmag
+        adj_Kpy = cy * Kp * ydir * ymag
+        
+        # Derivative adjustments
+        adj_Kdx = cx * Kd * xdir * (xmag - xmag_old)
+        adj_Kdy = cy * Kd * ydir * (ymag - ymag_old)
+        
+        # Total adjustments
+        adjustment_x = adj_Kpx + adj_Kdx
+        adjustment_y = adj_Kpy + adj_Kdy
+        
+        # Update servo angles
+        servo1_now += adjustment_x
+        servo2_now += adjustment_y
+        
+        # Reset if angles exceed bounds
+        if abs(servo1_now) > 90:
+            servo1_now = 0
+        if abs(servo2_now) > 90:
+            servo2_now = 0
+        
+        servo1.angle = servo1_now
+        servo2.angle = servo2_now
+        
+        # Small delay for smooth movement
+        sleep(0.01)
+        
+        # Store old values for derivative control
+        xmag_old = xmag
+        ymag_old = ymag
