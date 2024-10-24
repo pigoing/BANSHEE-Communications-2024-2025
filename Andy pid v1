@@ -9,8 +9,7 @@ print("Starting")
 
 # Initialize USB camera (Arducam 1080P)
 def initialize_camera():
-    # Assuming the USB camera is recognized as device 0
-    vid = cv2.VideoCapture(0)
+    vid = cv2.VideoCapture(0)  # Assuming the USB camera is recognized as device 0
     if not vid.isOpened():
         print("Failed to open camera")
         return None
@@ -67,6 +66,8 @@ def rescale_frame(frame, percent):
 
 # Initialize camera
 vid = initialize_camera()
+if vid is None:
+    exit()  # Exit if camera failed to initialize
 
 # Initialize servos on GPIO pins 18 and 13 (swapped)
 pigpio_factory = PiGPIOFactory()
@@ -145,3 +146,14 @@ while True:
         # Store old values for derivative control
         xmag_old = xmag
         ymag_old = ymag
+    
+    # Display the resulting frame
+    cv2.imshow('Camera Feed', img)
+    
+    # Break the loop on 'q' key press
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release the camera and close all OpenCV windows
+vid.release()
+cv2.destroyAllWindows()
