@@ -1,4 +1,4 @@
-\import cv2
+import cv2
 import numpy as np
 from simple_pid import PID
 import RPi.GPIO as GPIO
@@ -63,6 +63,7 @@ try:
     while True:
         ret, frame = cap.read()
         if not ret:
+            print("Camera frame not captured.")
             break
 
         # Convert frame to grayscale for marker detection
@@ -100,6 +101,9 @@ try:
             error_x = x_marker - x_center
             error_y = y_marker - y_center
 
+            # Diagnostic print statements for errors
+            print(f"Error X: {error_x}, Error Y: {error_y}")
+
             # Calculate smoothed errors using exponential moving average (EMA)
             smoothed_error_x = alpha * error_x + (1 - alpha) * smoothed_error_x
             smoothed_error_y = alpha * error_y + (1 - alpha) * smoothed_error_y
@@ -107,41 +111,15 @@ try:
             # Check if errors are significant enough to adjust servos
             if abs(smoothed_error_x) > DEADBAND:
                 pan_correction = pid_pan(smoothed_error_x)
+                print(f"Pan Correction: {pan_correction}")
             else:
                 pan_correction = 0
 
             if abs(smoothed_error_y) > DEADBAND:
                 tilt_correction = pid_tilt(smoothed_error_y)
+                print(f"Tilt Correction: {tilt_correction}")
             else:
                 tilt_correction = 0
 
             # Calculate new angles but limit movement speed
-            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan_correction)), 0, 180)
-            tilt_angle = np.clip(tilt_angle + np.sign(tilt_correction) * min(MAX_SERVO_STEP, abs(tilt_correction)), 0, 180)
-
-            # Update servo positions with duty cycles
-            pan_pwm.ChangeDutyCycle(angle_to_duty_cycle(pan_angle))
-            tilt_pwm.ChangeDutyCycle(angle_to_duty_cycle(tilt_angle))
-
-            # Draw the marker and the center points
-            cv2.aruco.drawDetectedMarkers(frame, corners)
-            cv2.circle(frame, (x_marker, y_marker), 5, (0, 255, 0), -1)
-            cv2.circle(frame, (x_center, y_center), 5, (255, 0, 0), -1)
-
-        # Show the video feed with marker tracking
-        cv2.imshow('ArUco Marker Tracking', frame)
-
-        # Break the loop on 'q' key
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-        # Add a small delay to slow down the loop and reduce jitter
-        time.sleep(0.05)
-
-finally:
-    # Clean up resources
-    pan_pwm.stop()
-    tilt_pwm.stop()
-    GPIO.cleanup()
-    cap.release()
-    cv2.destroyAllWindows()
+            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan
