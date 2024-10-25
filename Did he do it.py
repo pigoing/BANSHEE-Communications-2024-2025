@@ -122,4 +122,38 @@ try:
                 tilt_correction = 0
 
             # Calculate new angles but limit movement speed
-            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan
+            pan_angle = np.clip(pan_angle + np.sign(pan_correction) * min(MAX_SERVO_STEP, abs(pan_correction)), 0, 180)
+            tilt_angle = np.clip(tilt_angle + np.sign(tilt_correction) * min(MAX_SERVO_STEP, abs(tilt_correction)), 0, 180)
+
+            # Diagnostic print for servo positions
+            print(f"Pan Angle: {pan_angle}, Tilt Angle: {tilt_angle}")
+
+            # Update servo positions with duty cycles
+            pan_pwm.ChangeDutyCycle(angle_to_duty_cycle(pan_angle))
+            tilt_pwm.ChangeDutyCycle(angle_to_duty_cycle(tilt_angle))
+
+            # Draw the marker and the center points
+            cv2.aruco.drawDetectedMarkers(frame, corners)
+            cv2.circle(frame, (x_marker, y_marker), 5, (0, 255, 0), -1)  # Green circle on marker
+            cv2.circle(frame, (x_center, y_center), 5, (255, 0, 0), -1)  # Blue circle on center
+
+        else:
+            print("No ArUco marker detected.")
+
+        # Show the video feed with marker tracking
+        cv2.imshow('ArUco Marker Tracking', frame)
+
+        # Break the loop on 'q' key
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        # Add a small delay to slow down the loop and reduce jitter
+        time.sleep(0.05)
+
+finally:
+    # Clean up resources
+    pan_pwm.stop()
+    tilt_pwm.stop()
+    GPIO.cleanup()
+    cap.release()
+    cv2.destroyAllWindows()
