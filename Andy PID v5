@@ -1,0 +1,101 @@
+import cv2
+import cv2.aruco as aruco
+import numpy as np
+from gpiozero import AngularServo
+from time import sleep, time
+from gpiozero.pins.pigpio import PiGPIOFactory
+
+# Initialize video capture with lower resolution for faster processing
+vid = cv2.VideoCapture(0)
+vid.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Reduce resolution for efficiency
+vid.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+vid.set(cv2.CAP_PROP_FPS, 15)  # Set lower FPS
+print("Video started")
+
+# ArUco dictionary for 7x7 marker detection
+arucoDict = aruco.Dictionary_get(aruco.DICT_7X7_50)
+arucoParam = aruco.DetectorParameters_create()
+
+# Initialize servos with PiGPIO factory
+pigpio_factory = PiGPIOFactory()
+servo1 = AngularServo(18, pin_factory=pigpio_factory)
+servo2 = AngularServo(13, pin_factory=pigpio_factory)
+servo1.angle, servo2.angle = 0, 0
+sleep(2)
+print("Servos initialized.")
+
+# PID Control constants
+Kp, Ki, Kd = 60, 0, 0.5
+cx, cy = -1, 1  # Flip signs for servo direction correction
+
+# Variables for PID calculations
+prev_error_x, prev_error_y = 0, 0
+integral_x, integral_y = 0, 0
+last_update_time = time()
+
+def findArucoMarkers(img):
+    bbox, ids, _ = aruco.detectMarkers(img, arucoDict, parameters=arucoParam)
+    if ids is not None:
+        aruco.drawDetectedMarkers(img, bbox)
+    return bbox, ids
+
+def getAdjustment(windowMax, x):
+    normalized_adjustment = x / windowMax - 0.5
+    adjustment_direction = -1 if normalized_adjustment > 0 else 1
+    return abs(round(normalized_adjustment, 1)), adjustment_direction
+
+# Main loop
+while True:
+    ret, img = vid.read()
+    if not ret:
+        break
+
+    # Convert image to grayscale for faster processing
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Detect markers and calculate PID only if marker detected
+    bbox, ids = findArucoMarkers(gray_img)
+    if ids is not None:
+        # Process only every 0.1 seconds to reduce load
+        current_time = time()
+        if current_time - last_update_time > 0.1:
+            top_left = bbox[0][0][0][0], bbox[0][0][0][1]
+            bottom_right = bbox[0][0][2][0], bbox[0][0][2][1]
+            centre = ((top_left[0] + bottom_right[0]) // 2, (top_left[1] + bottom_right[1]) // 2)
+
+            window = gray_img.shape
+            xmag, xdir = getAdjustment(window[0], centre[1])
+            ymag, ydir = getAdjustment(window[1], centre[0])
+
+            # PID error calculations
+            error_x = xdir * xmag
+            error_y = ydir * ymag
+            integral_x += error_x
+            integral_y += error_y
+            derivative_x = error_x - prev_error_x
+            derivative_y = error_y - prev_error_y
+
+            # PID-based adjustments
+            adj_x = cx * (Kp * error_x + Ki * integral_x + Kd * derivative_x)
+            adj_y = cy * (Kp * error_y + Ki * integral_y + Kd * derivative_y)
+
+            # Update previous errors and last update time
+            prev_error_x = error_x
+            prev_error_y = error_y
+            last_update_time = current_time
+
+            # Adjust servo angles
+            servo1.angle = max(-90, min(90, servo1.angle + adj_x))
+            servo2.angle = max(-90, min(90, servo2.angle + adj_y))
+
+    # Display the camera feed every few frames for performance
+    if int(time() * 10) % 5 == 0:
+        cv2.imshow("Grayscale Camera Feed", gray_img)
+
+    # Quit program on pressing 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release resources
+vid.release()
+cv2.destroyAllWindows()
