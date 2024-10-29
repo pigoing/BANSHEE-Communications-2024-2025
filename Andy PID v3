@@ -28,8 +28,7 @@ Kp, Kd = 80, 10
 cx, cy = -1, 1  # Flip signs for servo direction correction
 
 def findArucoMarkers(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    bbox, ids, _ = aruco.detectMarkers(gray, arucoDict, parameters=arucoParam)
+    bbox, ids, _ = aruco.detectMarkers(img, arucoDict, parameters=arucoParam)
     if ids is not None:
         aruco.drawDetectedMarkers(img, bbox)
     return bbox, ids
@@ -45,13 +44,16 @@ while True:
     if not ret:
         break
 
-    bbox, ids = findArucoMarkers(img)
+    # Convert image to grayscale for faster processing
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    bbox, ids = findArucoMarkers(gray_img)
     if ids is not None:
         top_left = bbox[0][0][0][0], bbox[0][0][0][1]
         bottom_right = bbox[0][0][2][0], bbox[0][0][2][1]
         centre = ((top_left[0] + bottom_right[0]) // 2, (top_left[1] + bottom_right[1]) // 2)
 
-        window = img.shape
+        window = gray_img.shape
         xmag, xdir = getAdjustment(window[0], centre[1])
         ymag, ydir = getAdjustment(window[1], centre[0])
 
@@ -62,8 +64,8 @@ while True:
         servo1.angle = max(-90, min(90, servo1.angle + adj_x))
         servo2.angle = max(-90, min(90, servo2.angle + adj_y))
 
-        # Display the camera feed with markers
-        cv2.imshow("Camera Feed", img)
+        # Display the grayscale camera feed with markers
+        cv2.imshow("Grayscale Camera Feed", gray_img)
 
     # Quit program on pressing 'q'
     if cv2.waitKey(1) & 0xFF == ord('q'):
