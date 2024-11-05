@@ -24,7 +24,7 @@ sleep(2)
 print("Servos initialized.")
 
 # PID Control constants
-Kp, Ki, Kd = 60, 0.1, 0.5
+Kp, Ki, Kd = 100, 0.05, 0.5
 cx, cy = -1, 1  # Flip signs for servo direction correction
 
 # Low-pass filter coefficient for smoothing
