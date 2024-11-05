@@ -24,15 +24,17 @@ sleep(2)
 print("Servos initialized.")
 
 # PID Control constants
-Kp, Kd = 60, 0.5
+Kp, Ki, Kd = 60, 0.1, 0.5
 cx, cy = -1, 1  # Flip signs for servo direction correction
 
 # Low-pass filter coefficient for smoothing
 alpha = 0.1  # Change this value to control smoothness; smaller is smoother
 
-# Initialize filtered angles
+# Initialize filtered angles and PID terms
 filtered_angle1 = servo1.angle
 filtered_angle2 = servo2.angle
+integral_x, integral_y = 0, 0
+previous_error_x, previous_error_y = 0, 0
 
 def findArucoMarkers(img):
     bbox, ids, _ = aruco.detectMarkers(img, arucoDict, parameters=arucoParam)
@@ -64,9 +66,25 @@ while True:
         xmag, xdir = getAdjustment(window[0], centre[1])
         ymag, ydir = getAdjustment(window[1], centre[0])
 
+        # PID terms for x and y
+        error_x = xdir * xmag
+        error_y = ydir * ymag
+
+        # Integral accumulation
+        integral_x += error_x
+        integral_y += error_y
+
+        # Derivative terms
+        derivative_x = error_x - previous_error_x
+        derivative_y = error_y - previous_error_y
+
         # PID-based adjustments
-        adj_x = cx * (Kp * xdir * xmag)
-        adj_y = cy * (Kp * ydir * ymag)
+        adj_x = cx * (Kp * error_x + Ki * integral_x + Kd * derivative_x)
+        adj_y = cy * (Kp * error_y + Ki * integral_y + Kd * derivative_y)
+
+        # Update previous errors
+        previous_error_x = error_x
+        previous_error_y = error_y
 
         # Apply the low-pass filter to servo adjustments
         target_angle1 = max(-90, min(90, servo1.angle + adj_x))
