@@ -1,0 +1,2 @@
+This is an upload to push from the dietPi via an SSH
+Hello Git!
