@@ -5,6 +5,7 @@ import time
 
 import serial.tools.list_ports
 
+
 def find_pixhawk_port():
     """Finds the correct Pixhawk serial port on Windows (COMx)."""
     ports = list(serial.tools.list_ports.comports())
@@ -67,7 +68,7 @@ def connect_to_pixhawk():
         print(f"Failed to connect: {e}")
         return None'''
 
-def ascend_and_hover(master, vz=0.5, ascend_duration=3, hover_duration=5):
+def ascend_and_hover(master, az=25, ascend_duration=4, hover_duration=5):
     """Command the drone to ascend and then hover in place."""
     
     # Ascend
@@ -75,13 +76,13 @@ def ascend_and_hover(master, vz=0.5, ascend_duration=3, hover_duration=5):
         master.mav.set_position_target_local_ned_send(
             0, master.target_system, master.target_component,
             mavutil.mavlink.MAV_FRAME_LOCAL_NED,  # Local NED frame
-            int(0b110111000111),  # Only use velocity
+            int(0b100111000011),  # Only use velocity
             0, 0, 0,  # Position (ignored)
-            0, 0, -vz,  # Velocity: Upward (negative Z in NED)
-            0, 0, 0,  # Acceleration (ignored)
+            0, 0, 0,  # Velocity: Upward (negative Z in NED)
+            0, 0, -az,  # Acceleration (ignored)
             0, 0  # Yaw (ignored)
         )
-        print(f"🔼 Ascending at {vz} m/s")
+        print(f"🔼 Ascending at {az} m/s")
         time.sleep(1)
 
     print("✔ Ascension complete! Transitioning to hover...")
@@ -103,7 +104,7 @@ def ascend_and_hover(master, vz=0.5, ascend_duration=3, hover_duration=5):
     print("✔ Hover complete!")
 
 
-def descend(master, vz=-0.5, duration=5):
+def descend(master, vz=0.5, duration=5):
     """Command the drone to descend at a set velocity"""
     for _ in range(duration):
         master.mav.set_position_target_local_ned_send(
