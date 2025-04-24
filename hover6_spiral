@@ -1,0 +1,172 @@
+# dronekit_rpi_version.py
+
+from dronekit import connect, VehicleMode, LocationGlobalRelative
+from pymavlink import mavutil
+import time
+import os
+import math
+import glob
+import serial.tools.list_ports
+
+
+# -------------------- Pixhawk Port Detection (Raspberry Pi/Linux) --------------------
+
+def find_pixhawk_port():
+    """Find the Pixhawk's main MAVLink port via /dev/serial/by-id/ (Linux)."""
+    serial_links = glob.glob('/dev/serial/by-id/*')
+
+    for link in serial_links:
+        if all(x in link for x in ["Pixhawk", "if00"]):  # Main MAVLink port
+            real_path = os.path.realpath(link)
+            print(f"✅ Found Pixhawk MAVLink port: {real_path}")
+            return real_path
+
+    print("❌ No valid Pixhawk MAVLink port found!")
+    return None
+
+
+# -------------------- DroneKit Connection --------------------
+
+def connect_to_pixhawk():
+    port = find_pixhawk_port()
+    if not port:
+        return None
+
+    try:
+        print(f"🔌 Connecting to {port} at 115200 baud...")
+        vehicle = connect(port, wait_ready=True, baud=115200)
+        print("✅ Connected to Pixhawk!")
+        return vehicle
+    except Exception as e:
+        print(f"❌ Connection failed: {e}")
+        return None
+
+
+# -------------------- Force Arm --------------------
+
+def force_arm(vehicle):
+    """Force arms the drone using MAVLink."""
+    print("⚠️ Forcing arm via MAVLink...")
+
+    vehicle.mode = VehicleMode("GUIDED")
+    time.sleep(2)
+
+    vehicle._master.mav.command_long_send(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+        0, 1, 21196, 0, 0, 0, 0, 0
+    )
+
+    while not vehicle.armed:
+        print("⏳ Waiting for drone to arm...")
+        time.sleep(1)
+
+    print("✅ Drone is force-armed.")
+
+
+# -------------------- Takeoff --------------------
+
+def arm_and_takeoff(vehicle, target_altitude):
+    """Force arms and takes off to a target altitude."""
+    force_arm(vehicle)
+
+    print(f"🚀 Taking off to {target_altitude} meters...")
+    vehicle.simple_takeoff(target_altitude)
+
+    while True:
+        alt = vehicle.location.global_relative_frame.alt
+        if alt is not None:
+            print(f"📡 Altitude: {alt:.2f} m")
+            if alt >= target_altitude * 0.95:
+                print("✅ Target altitude reached!")
+                break
+        else:
+            print("📡 Altitude: waiting for data...")
+
+        time.sleep(1)
+
+
+# -------------------- Hover --------------------
+
+def hover(duration=5):
+    """Hover in place for a set number of seconds."""
+    print(f"🛑 Hovering for {duration} seconds...")
+    time.sleep(duration)
+    print("✔ Hover complete!")
+
+
+# -------------------- Land --------------------
+
+def land(vehicle):
+    print("🛬 Landing...")
+    vehicle.mode = VehicleMode("LAND")
+
+    while vehicle.armed:
+        alt = vehicle.location.global_relative_frame.alt
+        print(f"📉 Altitude: {alt:.2f} m")
+        time.sleep(1)
+
+    print("✅ Drone has landed and disarmed.")
+
+
+# -------------------- Fly Spiral --------------------
+
+def fly_spiral(vehicle, start_radius=1, end_radius=5, turns=2, altitude=0.25, points_per_turn=12):
+    """
+    Fly in a horizontal spiral path.
+    :param vehicle: connected DroneKit vehicle
+    :param start_radius: starting radius in meters
+    :param end_radius: final radius in meters
+    :param turns: number of full spiral turns
+    :param altitude: constant altitude in meters
+    :param points_per_turn: smoothness of the spiral
+    """
+    print("🌀 Flying in a spiral pattern...")
+
+    center = vehicle.location.global_relative_frame
+    lat = center.lat
+    lon = center.lon
+    R = 6378137.0  # Earth radius in meters
+
+    total_points = int(turns * points_per_turn)
+    for i in range(total_points + 1):
+        frac = i / total_points
+        radius = start_radius + (end_radius - start_radius) * frac
+        angle = 2 * math.pi * turns * frac
+
+        dlat = (radius * math.cos(angle)) / R
+        dlon = (radius * math.sin(angle)) / (R * math.cos(math.radians(lat)))
+
+        new_lat = lat + dlat
+        new_lon = lon + dlon
+
+        point = LocationGlobalRelative(new_lat, new_lon, altitude)
+        vehicle.simple_goto(point)
+        print(f"📍 Spiral point {i + 1}/{total_points + 1}")
+        time.sleep(1.5)
+
+    print("✅ Spiral complete.")
+
+
+# -------------------- Main Program --------------------
+
+if __name__ == "__main__":
+    vehicle = connect_to_pixhawk()
+
+    if not vehicle:
+        print("❌ Could not connect to Pixhawk. Exiting...")
+        exit()
+
+    arm_and_takeoff(vehicle, target_altitude=0.25)
+
+    hover(duration=2)
+
+    fly_spiral(vehicle, start_radius=0.5, end_radius=2.5, turns=2, altitude=0.25)
+
+    hover(duration=2)
+
+    land(vehicle)
+
+    vehicle.close()
+    print("🚪 Disconnected from Pixhawk.")
