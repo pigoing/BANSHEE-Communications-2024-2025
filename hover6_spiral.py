@@ -1,5 +1,4 @@
 # dronekit_rpi_version.py
-#
 from dronekit import connect, VehicleMode, LocationGlobalRelative
 from pymavlink import mavutil
 import time

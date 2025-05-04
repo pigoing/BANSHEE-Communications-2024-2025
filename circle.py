@@ -1,3 +1,4 @@
+# make sure we are in python 3.9 (run pyenv global 3.9 to switch versions of python)
 from dronekit import connect, VehicleMode, LocationGlobalRelative
 from pymavlink import mavutil
 import time
